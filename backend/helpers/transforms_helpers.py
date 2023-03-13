@@ -21,9 +21,9 @@ def rotation(x=0, y=0, z=0):
 
 
 def scaling(x=1, y=1, z=1):
-    s = np.array([[x, 0, 0, 0],
-                  [0, y, 0, 0],
-                  [0, 0, z, 0],
+    s = np.array([[1/x, 0, 0, 0],
+                  [0, 1/y, 0, 0],
+                  [0, 0, 1/z, 0],
                   [0, 0, 0, 1]], dtype=float)
     return s
 
