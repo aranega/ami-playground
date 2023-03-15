@@ -1,5 +1,5 @@
-import base64
 import io
+from base64 import b64encode
 
 import mne as mne
 import nibabel as nib
@@ -7,19 +7,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from nibabel.spatialimages import SpatialImage
+from dipy.align.imaffine import AffineMap
 
 from backend.helpers.transforms_helpers import get_affine_matrix
 from backend.settings import orientation_map, base_data, VOXEL_SIZE
+
 
 base = nib.orientations.apply_orientation(
     np.asarray(base_data.dataobj), nib.orientations.axcodes2ornt(
         nib.orientations.aff2axcodes(base_data.affine))).astype(np.float32)
 
 
+## Util, to remove
 from functools import wraps
 import time
-
-
 
 def timeit(func):
     @wraps(func)
@@ -31,133 +32,137 @@ def timeit(func):
         print(f'Function {func.__name__}{args} {kwargs} Took {total_time:.4f} seconds')
         return result
     return timeit_wrapper
+##
+
+
+def get_slices(V, slice_indices=None):
+    if slice_indices is None:
+        slice_indices = np.array(V.shape) // 2
+
+    # Normalize the intensities to [0, 255]
+    V = np.asarray(V, dtype=np.float64)
+    V = 255 * (V - V.min()) / (V.max() - V.min())
+
+    # Extract the middle slices
+    axial = np.asarray(V[:, :, slice_indices[2]]).astype(np.uint8).T
+    coronal = np.asarray(V[:, slice_indices[1], :]).astype(np.uint8).T
+    sagittal = np.asarray(V[slice_indices[0], :, :]).astype(np.uint8).T
+
+    return axial, coronal, sagittal
+    # return sagittal, coronal, axial
+
+
+def overlay_slices(L, R):
+    la, lc, ls = get_slices(L)
+    ra, rc, rs = get_slices(R)
+    return ((la, ra), (lc, rc), (ls, rs))
+
+    # sh = L.shape
+    # c1 = np.zeros(shape=(sh[2], sh[1], 3), dtype=np.uint8)
+    # c2 = np.zeros(shape=(sh[2], sh[0], 3), dtype=np.uint8)
+    # c3 = np.zeros(shape=(sh[1], sh[0], 3), dtype=np.uint8)
+
+    # c1[..., 0] = la * (la > la[0, 0])
+    # c1[..., 1] = la * (la > la[0, 0])
+    # c1[..., 2] = la * (la > la[0, 0])
+
+    # # c1[..., 0] = ra * (ra > ra[0, 0])
+    # # c1[..., 1] = ra * (ra > ra[0, 0])
+    # c1[..., 2] = ra * (ra > ra[0, 0])
+
+    # c2[..., 0] = lc * (lc > lc[0, 0])
+    # c2[..., 1] = lc * (lc > lc[0, 0])
+    # c2[..., 2] = lc * (lc > lc[0, 0])
+
+    # # c2[..., 0] = rc * (rc > rc[0, 0])
+    # c2[..., 1] = rc * (rc > rc[0, 0])
+    # # c2[..., 2] = rc * (rc > rc[0, 0])
+
+    # c3[..., 0] = ls * (ls > ls[0, 0])
+    # c3[..., 1] = ls * (ls > ls[0, 0])
+    # c3[..., 2] = ls * (ls > ls[0, 0])
+
+    # c3[..., 0] = rs * (rs > rs[0, 0])
+
+    # c3[..., 1] = rs * (rs > rs[0, 0])
+    # c3[..., 2] = rs * (rs > rs[0, 0])
+
+    # c1[..., 0] = la * (la > la[0, 0])
+    # c1[..., 1] = ra * (ra > ra[0, 0])
+
+    # c2[..., 0] = lc * (lc > lc[0, 0])
+    # c2[..., 1] = rc * (rc > rc[0, 0])
+
+    # c3[..., 0] = ls * (ls > ls[0, 0])
+    # c3[..., 1] = rs * (rs > rs[0, 0])
+
+    # c1 = 0.5 * la  + 0.5 * ra
+    # c2 = 0.5 * lc  + 0.5 * rc
+    # c3 = 0.5 * ls  + 0.5 * rs
+
+    # return c1, c2, c3
+
+
 
 
 @timeit
-def _generate_image(overlay, orientation, alpha=0.5):
-    """Define a helper function for comparing plots."""
-
+def get_image(overlay, alpha=0.5, size=25.4):
     overlay = nib.orientations.apply_orientation(
         np.asarray(overlay.dataobj), nib.orientations.axcodes2ornt(
             nib.orientations.aff2axcodes(overlay.affine))).astype(np.float32)
+    c1, c2, c3 = overlay_slices(base, overlay)
 
-    # Set the physical size of each voxel (in millimeters)
-    voxel_size = VOXEL_SIZE
-
-    image_size = len(base)
-
-    # Calculate the appropriate figsize in inches
-    # figsize = (image_size * voxel_size / 25.4, image_size * voxel_size / 25.4)
-
-    fig, ax = plt.subplots(1, 1)
-    i = orientation_map[orientation]
-    ax.imshow(np.take(base, [base.shape[i] // 2], axis=i).squeeze().T,
-              cmap='gray')
-    ax.imshow(np.take(overlay, [overlay.shape[i] // 2],
-                      axis=i).squeeze().T, cmap='gist_heat', alpha=alpha)
-    ax.invert_yaxis()
-    ax.axis('off')
-
-    fig.tight_layout()
-    return fig
-
-
-from dipy.viz import regtools
-
-
-@timeit
-def overlay_slices(L, R, slice_index=None, slice_type=1, fname=None, **fig_kwargs):
-    # Normalize the intensities to [0,255]
-    sh = L.shape
-    L = np.asarray(L, dtype=np.float64)
-    R = np.asarray(R, dtype=np.float64)
-    L = 255 * (L - L.min()) / (L.max() - L.min())
-    R = 255 * (R - R.min()) / (R.max() - R.min())
-
-    # Create the color image to draw the overlapped slices into, and extract
-    # the slices (note the transpositions)
-    if slice_type == 0:
-        if slice_index is None:
-            slice_index = sh[0] // 2
-        colorImage = np.zeros(shape=(sh[2], sh[1], 3), dtype=np.uint8)
-        ll = np.asarray(L[slice_index, :, :]).astype(np.uint8).T
-        rr = np.asarray(R[slice_index, :, :]).astype(np.uint8).T
-    elif slice_type == 1:
-        if slice_index is None:
-            slice_index = sh[1] // 2
-        colorImage = np.zeros(shape=(sh[2], sh[0], 3), dtype=np.uint8)
-        ll = np.asarray(L[:, slice_index, :]).astype(np.uint8).T
-        rr = np.asarray(R[:, slice_index, :]).astype(np.uint8).T
-    elif slice_type == 2:
-        if slice_index is None:
-            slice_index = sh[2] // 2
-        colorImage = np.zeros(shape=(sh[1], sh[0], 3), dtype=np.uint8)
-        ll = np.asarray(L[:, :, slice_index]).astype(np.uint8).T
-        rr = np.asarray(R[:, :, slice_index]).astype(np.uint8).T
-    else:
-        print("Slice type must be 0, 1 or 2.")
-        return
-
-    # Draw the intensity images to the appropriate channels of the color image
-    # The "(ll > ll[0, 0])" condition is just an attempt to eliminate the
-    # background when its intensity is not exactly zero (the [0,0] corner is
-    # usually background)
-    colorImage[..., 0] = ll * (ll > ll[0, 0])
-    colorImage[..., 1] = rr * (rr > rr[0, 0])
-
-    fig, ax = plt.subplots(1, 1)
-    ax.set_axis_off()
-    ax.imshow(colorImage, cmap=plt.cm.gray, origin='lower')
-
-    # Save the figure to disk, if requested
-    if fname is not None:
-        fig.savefig(fname, bbox_inches='tight', **fig_kwargs)
-
-    return fig
-
-# @timeit
-# def _generate_image(overlay, orientation, alpha=0.5):
-#     img = SpatialImage(overlay.dataobj, overlay.affine)
-#     return img.orthoview().figs
-
-
-# @timeit
-# def get_image(overlay, orientation, alpha=0.5):
-#     fig = _generate_image(overlay, orientation, alpha)
-#     # fig = fig[0]
-#     # Save the figure to a BytesIO object
-#     buf = io.BytesIO()
-#     fig.savefig(buf, format='png', transparent=True)
-#     buf.seek(0)
-#     plt.close('all')
-#     return base64.b64encode(buf.getvalue()).decode('utf-8')
-
-
-# @timeit
-def get_image(overlay, orientation, alpha=0.5):
     # Save the figure to a BytesIO object
-    buf = io.BytesIO()
-    i = orientation_map[orientation]
-    overlay = nib.orientations.apply_orientation(
-        np.asarray(overlay.dataobj), nib.orientations.axcodes2ornt(
-            nib.orientations.aff2axcodes(overlay.affine))).astype(np.float32)
-    overlay_slices(base, overlay, slice_type=i, fname=buf)
-    buf.seek(0)
-    return base64.b64encode(buf.getvalue()).decode('utf-8')
+    buffers = [io.BytesIO(), io.BytesIO(), io.BytesIO()]
+    img_size = len(base)
+    voxel_sizes = base_data.header.get_zooms()
+    orientations = [
+        (1, 0),  # Axial: y/x
+        (1, 2),  # Coronal: y/z
+        (0, 2),  # Sagittal: x/z
+    ]
+    for i, (buf, (l, r)) in enumerate(zip(buffers, (c1, c2, c3))):
+
+        # get the voxel size depending on the orientation
+        a0, a1 = orientations[i]
+        voxel_size_a, voxel_size_b = voxel_sizes[a0], voxel_sizes[a1]
+
+        # compute the fig size
+        figsize = (img_size * voxel_size_a / size, img_size * voxel_size_b / size)
+
+        # create the fig and add the two planes
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        ax.imshow(l, cmap="gray")
+        ax.imshow(r, cmap="gist_heat", alpha=alpha)
+        ax.invert_yaxis()
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(buf)
+
+    return [b64encode(buf.getvalue()).decode('utf-8') for buf in buffers]
+
+
 
 
 @timeit
-def get_aligned_overlay(overlay, transform, axis, value):
+def get_aligned_overlay(overlay, transformations, init):
 
-    from dipy.align.imaffine import AffineMap
+    shape = overlay.shape
+    affine = overlay.affine
+    # overlay = nib.orientations.apply_orientation(
+    #     np.asarray(overlay.dataobj), nib.orientations.axcodes2ornt(
+    #         nib.orientations.aff2axcodes(overlay.affine))).astype(np.float32)
 
-    affine_map = AffineMap(get_affine_matrix(transform, **{axis: value}),
-                           overlay.dataobj.shape, overlay.affine,
+    matrix = init
+    for transfo, axis in transformations.items():
+        matrix = matrix @ get_affine_matrix(base_data, transfo, **axis)
+
+    print(matrix)
+    affine_map = AffineMap(matrix,
+                           shape, affine,
                            base_data.dataobj.shape, base_data.affine)
-    reg_data = affine_map.transform(np.array(base_data.dataobj), interpolation='linear')
-    img = SpatialImage(reg_data, overlay.affine)
+    reg_data = affine_map.transform(base_data.get_fdata(), interpolation='linear')
+
+    img = SpatialImage(reg_data, affine)
 
     return img
-    # return mne.transforms.apply_volume_registration(base_data, overlay,
-                                                    # get_affine_matrix(transform, **{axis: value}),
-                                                    # cval='1%')
